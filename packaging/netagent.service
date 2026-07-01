@@ -1,0 +1,21 @@
+[Unit]
+Description=Netagent (NetEdge management agent)
+Documentation=https://glucube.com/netedge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/netagent --config /etc/netagent/agent.toml run
+# Restart=always is the watchdog: systemd brings the agent back if it dies.
+Restart=always
+RestartSec=5
+
+# Hardening — relax as needed for reboot/network/hostname operations, which
+# require privilege. The agent needs CAP_SYS_BOOT for reboot/shutdown and broad
+# rights for network/hostname changes, so it typically runs as root; tighten
+# per deployment if those operations are not used.
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,39 @@
+# Netagent configuration (operator-provided, set at deploy time).
+# Copy to /etc/netagent/agent.toml (Linux) or C:\ProgramData\Netagent\agent.toml.
+# Environment overrides: NETAGENT_SERVER_URL, NETAGENT_ENROLLMENT_TOKEN,
+# NETAGENT_SPKI_PIN, NETAGENT_DATA_DIR, NETAGENT_LOG.
+
+# Base URL of the NetEdge server.
+#   http://...  : plaintext (lab only)
+#   https://... : TLS — REQUIRES server_spki_pin below (we pin, never disable verification)
+server_url = "https://netedge.example.com:8080"
+
+# Where the per-agent key + enrollment state are stored.
+data_dir = "/var/lib/netagent"
+
+# One-time enrollment token, minted by a NetEdge admin and bound to a node.
+# Only needed until the agent has enrolled; can be removed afterwards.
+enrollment_token = "paste-one-time-enrollment-token-here"
+
+# TLS public-key (SPKI) pin of the NetEdge server certificate, sha256 hex.
+# Required for https/wss. Supports self-signed server certs without trusting a CA.
+# Compute from the server cert:  openssl x509 -in server.crt -pubkey -noout \
+#   | openssl pkey -pubin -outform der | openssl dgst -sha256
+server_spki_pin = "0000000000000000000000000000000000000000000000000000000000000000"
+
+# Heartbeat cadence (seconds). Kept light; the agent is near-idle at rest.
+heartbeat_interval_secs = 45
+
+# HTTP poll cadence (seconds) used when the WebSocket is unavailable.
+poll_interval_secs = 10
+
+# Log level: error | warn | info | debug | trace
+log_level = "info"
+
+# Exec authorization policy.
+#   Secure default (omit this whole section): NO exec is permitted at all.
+#   Grant specific programs per group via allow_list, or set allow_arbitrary = true
+#   ONLY for groups explicitly designated administrative.
+[exec_policy]
+allow_arbitrary = false
+allow_list = ["ipconfig", "ip", "systemctl", "powershell.exe"]

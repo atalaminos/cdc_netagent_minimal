@@ -1,0 +1,32 @@
+[package]
+name = "netagent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "netagent"
+path = "src/main.rs"
+
+[dependencies]
+netagent-proto    = { workspace = true }
+netagent-core     = { workspace = true }
+netagent-platform = { path = "../platform" }
+
+tokio              = { workspace = true }
+clap               = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow             = { workspace = true }
+hostname           = { workspace = true }
+base64             = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+
+[dev-dependencies]
+netagent-core = { workspace = true, features = ["mock"] }
+mock-netedge  = { path = "../mock-netedge" }
+tokio         = { workspace = true }
+tempfile      = { workspace = true }
