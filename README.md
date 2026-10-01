@@ -239,6 +239,10 @@ netagent [--config <ruta>] <comando>
 
 Ruta de config por defecto: `/etc/netagent/agent.toml` (Linux),
 `C:\ProgramData\Netagent\agent.toml` (Windows). Ver `config/agent.example.toml`.
+`data_dir` es opcional (por defecto `/var/lib/netagent` o `%ProgramData%\Netagent`); sin
+sección `[exec_policy]` **no se permite ningún Exec** — NetEdge, al instalar el agente en preboot
+(netprep), siembra `allow_arbitrary = true` (agente gestionado: solo comandos firmados) o la
+allow-list del setting `netagent_exec_allow_list`.
 
 - **Linux**: se ejecuta como unidad systemd (`packaging/netagent.service`, `Restart=always`
   = watchdog), con logs al journal. En equipos sin systemd: ejecutar `netagent run` bajo

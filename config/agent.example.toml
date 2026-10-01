@@ -8,7 +8,8 @@
 #   https://... : TLS — REQUIRES server_spki_pin below (we pin, never disable verification)
 server_url = "https://netedge.example.com:8080"
 
-# Where the per-agent key + enrollment state are stored.
+# Where the per-agent key + enrollment state are stored. Optional: defaults to
+# /var/lib/netagent (Linux) or %ProgramData%\Netagent (Windows).
 data_dir = "/var/lib/netagent"
 
 # One-time enrollment token, minted by a NetEdge admin and bound to a node.

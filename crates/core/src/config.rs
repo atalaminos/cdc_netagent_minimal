@@ -59,7 +59,11 @@ fn default_log() -> String {
 pub struct Config {
     /// Base URL of NetEdge, e.g. "https://netedge.local:8080".
     pub server_url: String,
-    /// Directory holding the agent key + enrollment state. Default: alongside config.
+    /// Directory holding the agent key + enrollment state. Optional: defaults to
+    /// the platform data dir (`/var/lib/netagent`, `%ProgramData%\\Netagent`) so a
+    /// minimal `agent.toml` (e.g. one seeded offline by NetEdge's netprep) still
+    /// loads instead of failing with "missing field data_dir".
+    #[serde(default = "crate::util::default_data_dir")]
     pub data_dir: PathBuf,
     /// One-time enrollment token minted by a NetEdge admin (only needed to enroll).
     #[serde(default)]
@@ -163,6 +167,30 @@ impl EnrollState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimal_toml_without_data_dir_loads_with_platform_default() {
+        let cfg: Config = toml::from_str("server_url = \"http://10.0.0.1:8080\"\n").unwrap();
+        assert_eq!(cfg.data_dir, crate::util::default_data_dir());
+        assert!(cfg.enrollment_token.is_none());
+        assert_eq!(cfg.poll_interval_secs, 10);
+        // An explicit data_dir still wins.
+        let cfg2: Config =
+            toml::from_str("server_url = \"u\"\ndata_dir = \"/tmp/na\"\n").unwrap();
+        assert_eq!(cfg2.data_dir, PathBuf::from("/tmp/na"));
+    }
+
+    #[test]
+    fn netprep_seeded_toml_parses() {
+        // Shape written by NetEdge's netprep (install_netagent, Windows paths).
+        let t = "server_url = \"http://10.0.0.1:8080\"\ndata_dir = \"C:\\\\ProgramData\\\\Netagent\"\n\
+                 enrollment_token = \"enr_x\"\nheartbeat_interval_secs = 300\npoll_interval_secs = 60\n\n\
+                 [exec_policy]\nallow_arbitrary = true\nallow_list = []\n";
+        let cfg: Config = toml::from_str(t).unwrap();
+        assert_eq!(cfg.data_dir, PathBuf::from("C:\\ProgramData\\Netagent"));
+        assert!(cfg.exec_policy.allow_arbitrary);
+        assert_eq!(cfg.enrollment_token.as_deref(), Some("enr_x"));
+    }
 
     #[test]
     fn exec_policy_deny_by_default() {
