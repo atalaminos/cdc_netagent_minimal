@@ -237,3 +237,107 @@ mod tests {
         assert!(verify_report(&signed, &other.verifying_key()).is_err());
     }
 }
+
+/// Authentication of the HTTP command poll (`GET …/commands/poll`).
+///
+/// A poll carries no body, so it is authenticated with two headers: the
+/// request timestamp in Unix **milliseconds** and an Ed25519 signature, by the
+/// agent's per-device key, over a domain-separated canonical string that binds
+/// the agent id and that timestamp. NetEdge verifies it against the public key
+/// stored at enrollment, rejects stale timestamps (outside a small skew window)
+/// and requires the timestamp to be strictly greater than the last accepted one
+/// for that agent, which makes a captured poll non-replayable.
+pub mod poll_auth {
+    use ed25519_dalek::{SigningKey, VerifyingKey};
+
+    use crate::crypto::{self, SIG_LEN};
+    use crate::error::ProtoError;
+
+    /// Header carrying the request timestamp (Unix milliseconds, decimal).
+    pub const HEADER_TS: &str = "x-netagent-ts";
+    /// Header carrying the signature (lowercase hex, 128 chars).
+    pub const HEADER_SIG: &str = "x-netagent-sig";
+    /// Maximum accepted clock skew between agent and server.
+    pub const MAX_SKEW_MS: i64 = 300_000;
+
+    /// Canonical signed bytes: `netagent-poll-v1\n<agent_id>\n<ts_ms>`.
+    pub fn message(agent_id: &str, ts_ms: i64) -> Vec<u8> {
+        format!("netagent-poll-v1\n{agent_id}\n{ts_ms}").into_bytes()
+    }
+
+    /// Sign a poll; returns the hex signature for [`HEADER_SIG`].
+    pub fn sign(key: &SigningKey, agent_id: &str, ts_ms: i64) -> String {
+        hex::encode(crypto::sign_bytes(key, &message(agent_id, ts_ms)))
+    }
+
+    /// Verify a poll signature (signature and freshness, not replay — the
+    /// caller tracks the last accepted timestamp per agent).
+    pub fn verify(
+        vk: &VerifyingKey,
+        agent_id: &str,
+        ts_ms: i64,
+        sig_hex: &str,
+        now_ms: i64,
+    ) -> Result<(), ProtoError> {
+        if (now_ms - ts_ms).abs() > MAX_SKEW_MS {
+            return Err(ProtoError::StaleTimestamp);
+        }
+        let raw = hex::decode(sig_hex.trim()).map_err(|_| ProtoError::InvalidSignature)?;
+        let sig: [u8; SIG_LEN] = raw.try_into().map_err(|_| ProtoError::InvalidSignature)?;
+        crypto::verify_bytes(vk, &message(agent_id, ts_ms), &sig)
+    }
+
+    /// Current wall-clock time in Unix milliseconds.
+    pub fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod poll_auth_tests {
+    use super::poll_auth::*;
+    use crate::crypto::generate_signing_key;
+    use crate::error::ProtoError;
+
+    #[test]
+    fn valid_poll_verifies() {
+        let k = generate_signing_key();
+        let sig = sign(&k, "a1", 10_000);
+        verify(&k.verifying_key(), "a1", 10_000, &sig, 10_000).unwrap();
+        // Within the skew window on both sides.
+        verify(&k.verifying_key(), "a1", 10_000, &sig, 10_000 + MAX_SKEW_MS).unwrap();
+        verify(&k.verifying_key(), "a1", 10_000, &sig, 10_000 - MAX_SKEW_MS).unwrap();
+    }
+
+    #[test]
+    fn stale_or_future_timestamp_is_rejected() {
+        let k = generate_signing_key();
+        let sig = sign(&k, "a1", 10_000);
+        let late = verify(&k.verifying_key(), "a1", 10_000, &sig, 10_001 + MAX_SKEW_MS);
+        assert!(matches!(late, Err(ProtoError::StaleTimestamp)));
+        let early = verify(&k.verifying_key(), "a1", 10_000 + MAX_SKEW_MS + 1, &sig, 10_000);
+        assert!(matches!(early, Err(ProtoError::StaleTimestamp)));
+    }
+
+    #[test]
+    fn signature_binds_agent_id_timestamp_and_key() {
+        let k = generate_signing_key();
+        let sig = sign(&k, "a1", 10_000);
+        let vk = k.verifying_key();
+        assert!(verify(&vk, "a2", 10_000, &sig, 10_000).is_err());
+        assert!(verify(&vk, "a1", 10_001, &sig, 10_000).is_err());
+        let other = generate_signing_key().verifying_key();
+        assert!(verify(&other, "a1", 10_000, &sig, 10_000).is_err());
+    }
+
+    #[test]
+    fn malformed_signature_is_rejected() {
+        let vk = generate_signing_key().verifying_key();
+        assert!(verify(&vk, "a1", 1, "zz", 1).is_err());
+        assert!(verify(&vk, "a1", 1, "abcd", 1).is_err());
+        assert!(verify(&vk, "a1", 1, "", 1).is_err());
+    }
+}

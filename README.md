@@ -185,6 +185,13 @@ instalación).
 - **Fallback por polling HTTP** (`GET /api/v1/agents/{id}/commands/poll`) cuando el WS no se
   puede establecer (redes restrictivas/proxies). Los informes salientes van a
   `POST /api/v1/agents/{id}/messages`.
+- **Poll autenticado**: cada `GET …/commands/poll` lleva `x-netagent-ts` (Unix en
+  **milisegundos**) y `x-netagent-sig` (Ed25519 en hex, con la clave por dispositivo del
+  agente) sobre la cadena canónica `netagent-poll-v1\n<agent_id>\n<ts_ms>`
+  (`netagent_proto::messages::poll_auth`). El servidor verifica contra la pubkey guardada en
+  el alta, rechaza timestamps fuera de ±5 min y exige que cada timestamp sea **estrictamente
+  mayor** que el último aceptado de ese agente (anti-replay). Sin firma válida → `401`. Así,
+  conocer un `agent_id` ya no permite vaciar su cola de comandos.
 - **Cola de comandos por agente** con estados `queued → sent → acked → failed`. Los comandos
   encolados mientras el agente está offline se entregan al reconectar.
 - *Backoff* exponencial entre intentos de conexión.
@@ -298,7 +305,7 @@ CREATE TABLE agent_commands (
 |---|---|---|---|
 | POST | `/api/v1/agents/enroll` | token de alta de un solo uso | registra pubkey, devuelve agent_id + clave de comandos a fijar |
 | WS | `/api/v1/agents/:id/ws` | Hello firmado por el agente | empuja comandos / recibe informes |
-| GET | `/api/v1/agents/:id/commands/poll` | — (la cola es por agente) | vacía los comandos encolados (fallback de polling) |
+| GET | `/api/v1/agents/:id/commands/poll` | firma del agente (`x-netagent-ts` + `x-netagent-sig`), anti-replay | vacía los comandos encolados (fallback de polling) |
 | POST | `/api/v1/agents/:id/messages` | firma del agente verificada vs pubkey guardada | ingesta de ack/result/rejected/heartbeat |
 
 **Reutilizar los subsistemas existentes de NetEdge** (no reinventar): las primitivas de firma

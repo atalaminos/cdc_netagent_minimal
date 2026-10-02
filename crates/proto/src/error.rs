@@ -8,6 +8,8 @@ pub enum ProtoError {
     InvalidKey(String),
     #[error("invalid signature")]
     InvalidSignature,
+    #[error("timestamp outside the accepted window")]
+    StaleTimestamp,
     #[error("serialization failed: {0}")]
     Serialize(String),
     #[error("deserialization failed: {0}")]

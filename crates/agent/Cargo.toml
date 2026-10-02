@@ -30,3 +30,4 @@ netagent-core = { workspace = true, features = ["mock"] }
 mock-netedge  = { path = "../mock-netedge" }
 tokio         = { workspace = true }
 tempfile      = { workspace = true }
+reqwest       = { workspace = true }

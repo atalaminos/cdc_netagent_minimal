@@ -52,3 +52,16 @@ fn poll_json_shape_is_tagged_array() {
     assert_eq!(v[0]["Command"]["payload"]["command"], "Ping");
     assert_eq!(v[0]["Command"]["signature"].as_array().unwrap().len(), 64);
 }
+
+/// Firma canónica de un poll (`messages::poll_auth`): clave fija, mismo vector en
+/// `netedge/src/agent_proto.rs` (`compat_vector::POLL_SIG_HEX`).
+pub const POLL_SIG_HEX: &str = "b7c2dd352fb6362abf5b183e6946a0e7ac065f905278f95281076c3e2d315ad32849205f9a6a8e1fca82928a2cd648f7ea9419ff5bc1875624ebd327f8f8090e";
+
+#[test]
+fn poll_signature_vector() {
+    use netagent_proto::messages::poll_auth;
+    let key = SigningKey::from_bytes(&[0x07; 32]);
+    let sig = poll_auth::sign(&key, "agent-canonical", 1_700_000_000_123);
+    assert_eq!(sig, POLL_SIG_HEX);
+    poll_auth::verify(&key.verifying_key(), "agent-canonical", 1_700_000_000_123, &sig, 1_700_000_000_123).unwrap();
+}

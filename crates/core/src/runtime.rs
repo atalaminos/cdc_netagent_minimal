@@ -63,6 +63,14 @@ impl Agent {
         let (in_tx, mut in_rx) = mpsc::unbounded_channel();
         let (out_tx, out_rx) = mpsc::unbounded_channel();
 
+        let transport = Transport::new(
+            &config.server_url,
+            &state.agent_id,
+            pin.as_deref(),
+            key.clone(),
+        )?
+        .with_prefer_ws(opts.prefer_ws);
+
         let dispatcher = Arc::new(Dispatcher::new(
             state.agent_id.clone(),
             key.clone(),
@@ -72,9 +80,6 @@ impl Agent {
             out_tx.clone(),
             http,
         ));
-
-        let transport = Transport::new(&config.server_url, &state.agent_id, pin.as_deref())?
-            .with_prefer_ws(opts.prefer_ws);
 
         let hb = heartbeat::spawn(
             platform.clone(),

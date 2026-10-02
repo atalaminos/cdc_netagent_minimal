@@ -1053,6 +1053,7 @@ dependencies = [
  "netagent-core",
  "netagent-platform",
  "netagent-proto",
+ "reqwest",
  "tempfile",
  "tokio",
  "tracing",

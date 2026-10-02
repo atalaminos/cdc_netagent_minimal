@@ -7,17 +7,24 @@
 //! Wire endpoints (documented in README.md):
 //!   POST {base}/api/v1/agents/enroll                      -> EnrollResponse
 //!   GET  {base}/api/v1/agents/{id}/commands/poll          -> [ServerMessage]
+//!        (signed: `x-netagent-ts` + `x-netagent-sig`, see `messages::poll_auth`)
 //!   POST {base}/api/v1/agents/{id}/messages   (AgentMessage body)
 //!   WS   {ws_base}/api/v1/agents/{id}/ws
 
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+
+use ed25519_dalek::SigningKey;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::Connector;
 
-use netagent_proto::messages::{AgentMessage, EnrollRequest, EnrollResponse, ServerMessage};
+use netagent_proto::messages::{
+    poll_auth, AgentMessage, EnrollRequest, EnrollResponse, ServerMessage,
+};
 
 use crate::error::{CoreError, Result};
 
@@ -48,12 +55,35 @@ pub struct Transport {
     agent_id: String,
     ws_connector: Option<Connector>,
     prefer_ws: bool,
+    /// Per-device key that signs each poll request.
+    key: SigningKey,
+    /// Last poll timestamp sent (ms). The server requires strictly increasing
+    /// timestamps per agent, so two polls in the same millisecond are bumped.
+    last_poll_ts: Arc<AtomicI64>,
+}
+
+/// Next poll timestamp: wall clock, but never ≤ the previous one.
+fn next_poll_ts(last: &AtomicI64, now_ms: i64) -> i64 {
+    let mut prev = last.load(Ordering::SeqCst);
+    loop {
+        let ts = now_ms.max(prev + 1);
+        match last.compare_exchange(prev, ts, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return ts,
+            Err(cur) => prev = cur,
+        }
+    }
 }
 
 impl Transport {
     /// Build a transport. `spki_pin` is required for https/wss and used for
-    /// public-key pinning (both the HTTP client and the WS connector).
-    pub fn new(server_url: &str, agent_id: &str, spki_pin: Option<&str>) -> Result<Self> {
+    /// public-key pinning (both the HTTP client and the WS connector). `key` is
+    /// the agent's per-device key, used to authenticate command polls.
+    pub fn new(
+        server_url: &str,
+        agent_id: &str,
+        spki_pin: Option<&str>,
+        key: SigningKey,
+    ) -> Result<Self> {
         let base = server_url.trim_end_matches('/').to_string();
         let is_tls = base.starts_with("https://") || base.starts_with("wss://");
 
@@ -81,6 +111,8 @@ impl Transport {
             agent_id: agent_id.to_string(),
             ws_connector,
             prefer_ws: true,
+            key,
+            last_poll_ts: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -145,9 +177,13 @@ impl Transport {
             "{}/api/v1/agents/{}/commands/poll",
             self.base, self.agent_id
         );
+        let ts = next_poll_ts(&self.last_poll_ts, poll_auth::now_ms());
+        let sig = poll_auth::sign(&self.key, &self.agent_id, ts);
         let resp = self
             .http
             .get(&url)
+            .header(poll_auth::HEADER_TS, ts.to_string())
+            .header(poll_auth::HEADER_SIG, sig)
             .send()
             .await
             .map_err(|e| CoreError::Http(e.to_string()))?;
@@ -319,4 +355,19 @@ enum SessionEnd {
 
 fn json<T: serde::Serialize>(v: &T) -> Result<String> {
     serde_json::to_string(v).map_err(|e| CoreError::Serde(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_ts_follows_clock_but_never_repeats() {
+        let last = AtomicI64::new(0);
+        assert_eq!(next_poll_ts(&last, 1_000), 1_000);
+        // Same millisecond, or a clock step backwards → strictly increasing.
+        assert_eq!(next_poll_ts(&last, 1_000), 1_001);
+        assert_eq!(next_poll_ts(&last, 500), 1_002);
+        assert_eq!(next_poll_ts(&last, 5_000), 5_000);
+    }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -28,7 +28,7 @@ use netagent_proto::command::{
 };
 use netagent_proto::crypto::{generate_signing_key, verifying_key_from_hex, verifying_key_to_hex};
 use netagent_proto::messages::{
-    AgentMessage, CommandAck, CommandResult, EnrollRequest, EnrollResponse, Heartbeat,
+    poll_auth, AgentMessage, CommandAck, CommandResult, EnrollRequest, EnrollResponse, Heartbeat,
     RejectedCommandReport, ServerMessage, SignedReport,
 };
 use netagent_proto::now_unix;
@@ -37,6 +37,8 @@ struct AgentRecord {
     pubkey: VerifyingKey,
     #[allow(dead_code)]
     hostname: String,
+    /// Last accepted poll timestamp (ms) — polls must be strictly newer.
+    last_poll_ts: i64,
 }
 
 /// Server-side state, shared across handlers and the test handle.
@@ -50,6 +52,8 @@ pub struct MockState {
     ws_senders: Mutex<HashMap<String, mpsc::UnboundedSender<ServerMessage>>>,
     inbox: Mutex<Vec<AgentMessage>>,
     rejected_reports: Mutex<u32>,
+    rejected_polls: Mutex<u32>,
+    accepted_polls: Mutex<u32>,
 }
 
 impl MockState {
@@ -66,6 +70,8 @@ impl MockState {
             ws_senders: Mutex::new(HashMap::new()),
             inbox: Mutex::new(Vec::new()),
             rejected_reports: Mutex::new(0),
+            rejected_polls: Mutex::new(0),
+            accepted_polls: Mutex::new(0),
         }
     }
 
@@ -225,6 +231,14 @@ impl MockServer {
     pub fn rejected_report_count(&self) -> u32 {
         *self.state.rejected_reports.lock()
     }
+    /// Polls refused for a missing/invalid/stale/replayed signature.
+    pub fn rejected_poll_count(&self) -> u32 {
+        *self.state.rejected_polls.lock()
+    }
+    /// Polls accepted (valid signature).
+    pub fn accepted_poll_count(&self) -> u32 {
+        *self.state.accepted_polls.lock()
+    }
 
     pub fn results(&self) -> Vec<CommandResult> {
         self.collect(|m| match m {
@@ -289,6 +303,7 @@ async fn enroll(
         AgentRecord {
             pubkey,
             hostname: req.hostname,
+            last_poll_ts: 0,
         },
     );
     st.queues.lock().insert(agent_id.clone(), VecDeque::new());
@@ -302,16 +317,48 @@ async fn enroll(
     }))
 }
 
+/// Verify the poll's `x-netagent-ts`/`x-netagent-sig` against the enrolled
+/// key, enforcing freshness and strictly increasing timestamps (anti-replay).
+fn poll_authorized(st: &MockState, id: &str, headers: &HeaderMap) -> bool {
+    let ts = headers
+        .get(poll_auth::HEADER_TS)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
+    let sig = headers
+        .get(poll_auth::HEADER_SIG)
+        .and_then(|v| v.to_str().ok());
+    let (Some(ts), Some(sig)) = (ts, sig) else {
+        return false;
+    };
+    let mut agents = st.agents.lock();
+    let Some(rec) = agents.get_mut(id) else {
+        return false;
+    };
+    if ts <= rec.last_poll_ts
+        || poll_auth::verify(&rec.pubkey, id, ts, sig, poll_auth::now_ms()).is_err()
+    {
+        return false;
+    }
+    rec.last_poll_ts = ts;
+    true
+}
+
 async fn poll(
     Path(id): Path<String>,
     State(st): State<Arc<MockState>>,
-) -> Json<Vec<ServerMessage>> {
+    headers: HeaderMap,
+) -> Result<Json<Vec<ServerMessage>>, StatusCode> {
+    if !poll_authorized(&st, &id, &headers) {
+        *st.rejected_polls.lock() += 1;
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    *st.accepted_polls.lock() += 1;
     let mut q = st.queues.lock();
     let drained: Vec<ServerMessage> = q
         .get_mut(&id)
         .map(|dq| dq.drain(..).collect())
         .unwrap_or_default();
-    Json(drained)
+    Ok(Json(drained))
 }
 
 async fn messages(

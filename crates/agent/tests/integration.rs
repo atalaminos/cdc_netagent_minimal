@@ -307,4 +307,37 @@ async fn falls_back_to_polling_when_websocket_unavailable() {
         !mock.is_connected(&state.agent_id),
         "no WS should be established"
     );
+    // Every poll the agent made was signed and accepted; none was refused.
+    assert!(mock.accepted_poll_count() > 0, "agent polls must be signed");
+    assert_eq!(mock.rejected_poll_count(), 0, "no poll may fail authentication");
+}
+
+#[tokio::test]
+async fn unsigned_or_replayed_poll_is_refused() {
+    let mock = MockServer::start_without_ws().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _platform) = enroll_and_run(&mock, dir.path(), true).await;
+    let url = format!(
+        "{}/api/v1/agents/{}/commands/poll",
+        mock.base_url, state.agent_id
+    );
+    let client = reqwest::Client::new();
+
+    // No signature headers → 401.
+    let r = client.get(&url).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+
+    // Signed by a foreign key (an attacker who only knows the agent id) → 401.
+    use netagent_proto::messages::poll_auth;
+    let attacker = generate_signing_key();
+    let ts = poll_auth::now_ms() + 60_000;
+    let r = client
+        .get(&url)
+        .header(poll_auth::HEADER_TS, ts.to_string())
+        .header(poll_auth::HEADER_SIG, poll_auth::sign(&attacker, &state.agent_id, ts))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    assert!(mock.rejected_poll_count() >= 2);
 }
