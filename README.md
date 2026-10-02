@@ -237,6 +237,16 @@ netagent [--config <ruta>] <comando>
   version
 ```
 
+### Compatibilidad byte-exacta con NetEdge
+
+NetEdge firma los comandos y verifica los informes con un **espejo** de este protocolo
+(`netedge/src/agent_proto.rs`). Como ambos lados re-serializan con bincode para firmar/verificar,
+cualquier diferencia de tipo (p. ej. `u32` vs `u64`) invalida todas las firmas. El test
+`crates/proto/tests/compat_vectors.rs` fija los bytes de varios sobres e informes canónicos; las
+**mismas constantes** están en `netedge` (`agent_proto::compat_vector`). Si cambias un tipo, un
+campo o el orden de una variante, actualiza ambos repos en el mismo cambio. El poll HTTP
+devuelve un array de `ServerMessage` (`[{"Command": SignedCommand}]`).
+
 Ruta de config por defecto: `/etc/netagent/agent.toml` (Linux),
 `C:\ProgramData\Netagent\agent.toml` (Windows). Ver `config/agent.example.toml`.
 `data_dir` es opcional (por defecto `/var/lib/netagent` o `%ProgramData%\Netagent`); sin
